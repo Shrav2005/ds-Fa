@@ -1,0 +1,621 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: distributed-hospital
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongodb-data
+  namespace: distributed-hospital
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-data
+  namespace: distributed-hospital
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: distributed-hospital
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:7
+          ports:
+            - name: mongodb
+              containerPort: 27017
+          startupProbe:
+            tcpSocket:
+              port: mongodb
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: mongodb
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: mongodb
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+      volumes:
+        - name: mongodb-data
+          persistentVolumeClaim:
+            claimName: mongodb-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: distributed-hospital
+spec:
+  selector:
+    app: mongodb
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: distributed-hospital
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management-alpine
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          startupProbe:
+            tcpSocket:
+              port: amqp
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: amqp
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: amqp
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: rabbitmq-data
+              mountPath: /var/lib/rabbitmq
+      volumes:
+        - name: rabbitmq-data
+          persistentVolumeClaim:
+            claimName: rabbitmq-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: distributed-hospital
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+    - name: management
+      port: 15672
+      targetPort: management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hospital-1
+  namespace: distributed-hospital
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hospital-1
+  template:
+    metadata:
+      labels:
+        app: hospital-1
+    spec:
+      initContainers:
+        - name: wait-for-infrastructure
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z mongodb 27017 && nc -z rabbitmq 5672; do echo waiting for MongoDB and RabbitMQ; sleep 2; done
+      containers:
+        - name: hospital
+          image: distributed-hospital-backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - hospital_node.py
+          args:
+            - --hospital-id
+            - H001
+            - --name
+            - City Hospital
+            - --host
+            - 0.0.0.0
+            - --port
+            - "5001"
+            - --icu
+            - "2"
+            - --emergency
+            - "5"
+            - --general
+            - "10"
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: MONGO_URI
+              value: mongodb://mongodb:27017
+            - name: COORDINATOR_URL
+              value: http://coordinator:5000
+            - name: DOCKER_ENV
+              value: "true"
+          ports:
+            - name: grpc
+              containerPort: 5001
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hospital-1
+  namespace: distributed-hospital
+spec:
+  selector:
+    app: hospital-1
+  ports:
+    - name: grpc
+      port: 5001
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hospital-2
+  namespace: distributed-hospital
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hospital-2
+  template:
+    metadata:
+      labels:
+        app: hospital-2
+    spec:
+      initContainers:
+        - name: wait-for-infrastructure
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z mongodb 27017 && nc -z rabbitmq 5672; do echo waiting for MongoDB and RabbitMQ; sleep 2; done
+      containers:
+        - name: hospital
+          image: distributed-hospital-backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - hospital_node.py
+          args:
+            - --hospital-id
+            - H002
+            - --name
+            - Metro Hospital
+            - --host
+            - 0.0.0.0
+            - --port
+            - "5002"
+            - --icu
+            - "0"
+            - --emergency
+            - "3"
+            - --general
+            - "8"
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: MONGO_URI
+              value: mongodb://mongodb:27017
+            - name: COORDINATOR_URL
+              value: http://coordinator:5000
+            - name: DOCKER_ENV
+              value: "true"
+          ports:
+            - name: grpc
+              containerPort: 5002
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hospital-2
+  namespace: distributed-hospital
+spec:
+  selector:
+    app: hospital-2
+  ports:
+    - name: grpc
+      port: 5002
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hospital-3
+  namespace: distributed-hospital
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hospital-3
+  template:
+    metadata:
+      labels:
+        app: hospital-3
+    spec:
+      initContainers:
+        - name: wait-for-infrastructure
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z mongodb 27017 && nc -z rabbitmq 5672; do echo waiting for MongoDB and RabbitMQ; sleep 2; done
+      containers:
+        - name: hospital
+          image: distributed-hospital-backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - hospital_node.py
+          args:
+            - --hospital-id
+            - H003
+            - --name
+            - Central Hospital
+            - --host
+            - 0.0.0.0
+            - --port
+            - "5003"
+            - --icu
+            - "4"
+            - --emergency
+            - "2"
+            - --general
+            - "12"
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: MONGO_URI
+              value: mongodb://mongodb:27017
+            - name: COORDINATOR_URL
+              value: http://coordinator:5000
+            - name: DOCKER_ENV
+              value: "true"
+          ports:
+            - name: grpc
+              containerPort: 5003
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hospital-3
+  namespace: distributed-hospital
+spec:
+  selector:
+    app: hospital-3
+  ports:
+    - name: grpc
+      port: 5003
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coordinator
+  namespace: distributed-hospital
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coordinator
+  template:
+    metadata:
+      labels:
+        app: coordinator
+    spec:
+      initContainers:
+        - name: wait-for-infrastructure
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z mongodb 27017 && nc -z rabbitmq 5672; do echo waiting for MongoDB and RabbitMQ; sleep 2; done
+      containers:
+        - name: coordinator
+          image: distributed-hospital-backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - coordinator.py
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: MONGO_URI
+              value: mongodb://mongodb:27017
+            - name: DOCKER_ENV
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coordinator
+  namespace: distributed-hospital
+spec:
+  selector:
+    app: coordinator
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signaling
+  namespace: distributed-hospital
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: signaling
+  template:
+    metadata:
+      labels:
+        app: signaling
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: signaling
+          image: distributed-hospital-signaling:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: websocket
+              containerPort: 8001
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: websocket
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: websocket
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signaling
+  namespace: distributed-hospital
+spec:
+  selector:
+    app: signaling
+  ports:
+    - name: websocket
+      port: 8001
+      targetPort: websocket
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: distributed-hospital
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: distributed-hospital-frontend:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: distributed-hospital
+spec:
+  type: NodePort
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30080

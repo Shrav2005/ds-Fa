@@ -1,0 +1,41 @@
+[
+  {
+    "hospital_id": "H001",
+    "hospital_name": "City Hospital",
+    "host": "localhost",
+    "rpc_port": 5001,
+    "grpc_port": 5101,
+    "http_port": 6001,
+    "beds": {
+      "ICU": 2,
+      "Emergency": 5,
+      "General": 10
+    }
+  },
+  {
+    "hospital_id": "H002",
+    "hospital_name": "Metro Hospital",
+    "host": "localhost",
+    "rpc_port": 5002,
+    "grpc_port": 5102,
+    "http_port": 6002,
+    "beds": {
+      "ICU": 0,
+      "Emergency": 3,
+      "General": 8
+    }
+  },
+  {
+    "hospital_id": "H003",
+    "hospital_name": "Central Hospital",
+    "host": "localhost",
+    "rpc_port": 5003,
+    "grpc_port": 5103,
+    "http_port": 6003,
+    "beds": {
+      "ICU": 4,
+      "Emergency": 2,
+      "General": 12
+    }
+  }
+]

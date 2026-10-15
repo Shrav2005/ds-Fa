@@ -1,0 +1,282 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:5672:5672"
+      - "${BIND_ADDRESS:-0.0.0.0}:15672:15672"
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:7
+    volumes:
+      - mongodb_data:/data/db
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${MONGODB_HOST_PORT:-27017}:27017"
+      - "${BIND_ADDRESS:-0.0.0.0}:27018:27017"
+    restart: unless-stopped
+
+  hospital-1:
+    build: ./backend
+    command: python hospital_node.py --hospital-id H001 --name "City Hospital" --host 0.0.0.0 --port 5001 --icu 2 --emergency 5 --general 10
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      MONGO_URI: mongodb://mongodb:27017
+      COORDINATOR_URL: http://coordinator:5000
+      DOCKER_ENV: "true"
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:5001:5001"
+    depends_on:
+      - mongodb
+      - rabbitmq
+    restart: unless-stopped
+
+  hospital-2:
+    build: ./backend
+    command: python hospital_node.py --hospital-id H002 --name "Metro Hospital" --host 0.0.0.0 --port 5002 --icu 0 --emergency 3 --general 8
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      MONGO_URI: mongodb://mongodb:27017
+      COORDINATOR_URL: http://coordinator:5000
+      DOCKER_ENV: "true"
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:5002:5002"
+    depends_on:
+      - rabbitmq
+      - mongodb
+    restart: unless-stopped
+
+  hospital-3:
+    build: ./backend
+    command: python hospital_node.py --hospital-id H003 --name "Central Hospital" --host 0.0.0.0 --port 5003 --icu 4 --emergency 2 --general 12
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      MONGO_URI: mongodb://mongodb:27017
+      COORDINATOR_URL: http://coordinator:5000
+      DOCKER_ENV: "true"
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:5003:5003"
+    depends_on:
+      - rabbitmq
+      - mongodb
+    restart: unless-stopped
+
+  coordinator:
+    build: ./backend
+    command: python coordinator.py
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      MONGO_URI: mongodb://mongodb:27017
+      HDFS_WEBHDFS_URL: http://namenode:9870
+      HDFS_WEBHDFS_USER: root
+      HDFS_REPLICATION: "2"
+      DOCKER_ENV: "true"
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:5000:5000"
+    depends_on:
+      - rabbitmq
+      - mongodb
+      - hospital-1
+      - hospital-2
+      - hospital-3
+    restart: unless-stopped
+
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    profiles: ["analytics"]
+    environment:
+      CLUSTER_NAME: hospital-analytics
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HDFS_CONF_dfs_webhdfs_enabled: "true"
+      HDFS_CONF_dfs_replication: "2"
+      HDFS_CONF_dfs_client_use_datanode_hostname: "true"
+      YARN_CONF_yarn_resourcemanager_hostname: resourcemanager
+      YARN_CONF_yarn_nodemanager_aux___services: mapreduce_shuffle
+      YARN_CONF_yarn_scheduler_minimum_allocation_mb: "128"
+      YARN_CONF_yarn_scheduler_maximum_allocation_mb: "2048"
+      YARN_CONF_yarn_app_mapreduce_am_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+      MAPRED_CONF_mapreduce_framework_name: yarn
+      MAPRED_CONF_mapreduce_map_memory_mb: "512"
+      MAPRED_CONF_mapreduce_reduce_memory_mb: "512"
+      MAPRED_CONF_mapreduce_map_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+      MAPRED_CONF_mapreduce_reduce_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+    volumes:
+      - hdfs_namenode_data:/hadoop/dfs/name
+      - ./backend/analytics:/opt/hospital-analytics:ro
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:9870:9870"
+    restart: unless-stopped
+
+  datanode-1:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    profiles: ["analytics"]
+    hostname: datanode-1
+    environment:
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HDFS_CONF_dfs_replication: "2"
+      HDFS_CONF_dfs_datanode_use_datanode_hostname: "true"
+      HDFS_CONF_dfs_client_use_datanode_hostname: "true"
+    volumes:
+      - hdfs_datanode_1_data:/hadoop/dfs/data
+    ports:
+      - "127.0.0.1:9865:9864"
+    depends_on:
+      - namenode
+    restart: unless-stopped
+
+  datanode-2:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    profiles: ["analytics"]
+    hostname: datanode-2
+    environment:
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HDFS_CONF_dfs_replication: "2"
+      HDFS_CONF_dfs_datanode_use_datanode_hostname: "true"
+      HDFS_CONF_dfs_client_use_datanode_hostname: "true"
+    volumes:
+      - hdfs_datanode_2_data:/hadoop/dfs/data
+    ports:
+      - "127.0.0.1:9866:9864"
+    depends_on:
+      - namenode
+    restart: unless-stopped
+
+  resourcemanager:
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    profiles: ["analytics"]
+    environment:
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HDFS_CONF_dfs_client_use_datanode_hostname: "true"
+      YARN_CONF_yarn_resourcemanager_hostname: resourcemanager
+      YARN_CONF_yarn_nodemanager_aux-services: mapreduce_shuffle
+      YARN_CONF_yarn_scheduler_minimum_allocation_mb: "128"
+      YARN_CONF_yarn_scheduler_maximum_allocation_mb: "2048"
+      YARN_CONF_yarn_app_mapreduce_am_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+      MAPRED_CONF_mapreduce_framework_name: yarn
+      MAPRED_CONF_mapreduce_map_memory_mb: "512"
+      MAPRED_CONF_mapreduce_reduce_memory_mb: "512"
+      MAPRED_CONF_mapreduce_map_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+      MAPRED_CONF_mapreduce_reduce_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:8088:8088"
+    depends_on:
+      - namenode
+    restart: unless-stopped
+
+  nodemanager-1:
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    profiles: ["analytics"]
+    environment:
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HDFS_CONF_dfs_client_use_datanode_hostname: "true"
+      YARN_CONF_yarn_resourcemanager_hostname: resourcemanager
+      YARN_CONF_yarn_nodemanager_aux___services: mapreduce_shuffle
+      YARN_CONF_yarn_nodemanager_aux___services_mapreduce__shuffle_class: org.apache.hadoop.mapred.ShuffleHandler
+      YARN_CONF_yarn_nodemanager_vmem__check__enabled: "false"
+      YARN_CONF_yarn_nodemanager_resource_memory__mb: "2048"
+      YARN_CONF_yarn_scheduler_maximum_allocation_mb: "2048"
+      YARN_CONF_yarn_app_mapreduce_am_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+      MAPRED_CONF_mapreduce_framework_name: yarn
+      MAPRED_CONF_mapreduce_map_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+      MAPRED_CONF_mapreduce_reduce_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+    depends_on:
+      - resourcemanager
+      - datanode-1
+    restart: unless-stopped
+
+  nodemanager-2:
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    profiles: ["analytics"]
+    environment:
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HDFS_CONF_dfs_client_use_datanode_hostname: "true"
+      YARN_CONF_yarn_resourcemanager_hostname: resourcemanager
+      YARN_CONF_yarn_nodemanager_aux___services: mapreduce_shuffle
+      YARN_CONF_yarn_nodemanager_aux___services_mapreduce__shuffle_class: org.apache.hadoop.mapred.ShuffleHandler
+      YARN_CONF_yarn_nodemanager_vmem__check__enabled: "false"
+      YARN_CONF_yarn_nodemanager_resource_memory__mb: "2048"
+      YARN_CONF_yarn_scheduler_maximum_allocation_mb: "2048"
+      YARN_CONF_yarn_app_mapreduce_am_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+      MAPRED_CONF_mapreduce_framework_name: yarn
+      MAPRED_CONF_mapreduce_map_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+      MAPRED_CONF_mapreduce_reduce_env: HADOOP_MAPRED_HOME=/opt/hadoop-3.2.1
+    depends_on:
+      - resourcemanager
+      - datanode-2
+    restart: unless-stopped
+
+  frontend:
+    profiles: ["public"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    expose:
+      - "80"
+    restart: unless-stopped
+
+  signaling:
+    profiles: ["public"]
+    build:
+      context: ./frontend
+      dockerfile: signaling/Dockerfile
+    environment:
+      TURN_URLS: ${TURN_URLS:-}
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:-}
+      TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-3600}
+    expose:
+      - "8001"
+    restart: unless-stopped
+
+  cloudflared:
+    profiles: ["cloudflare"]
+    image: cloudflare/cloudflared:latest
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - "${CLOUDFLARE_TUNNEL_TOKEN:-}"
+    depends_on:
+      - frontend
+      - coordinator
+      - signaling
+    restart: unless-stopped
+
+  cloudflare-quick-tunnel:
+    profiles: ["quick-tunnel"]
+    image: cloudflare/cloudflared:latest
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --protocol
+      - http2
+      - --url
+      - http://frontend:80
+    depends_on:
+      - frontend
+    restart: unless-stopped
+
+  caddy:
+    profiles: ["caddy"]
+    image: caddy:2-alpine
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - coordinator
+      - signaling
+    restart: unless-stopped
+
+volumes:
+  mongodb_data: {}
+  caddy_data: {}
+  caddy_config: {}
+  hdfs_namenode_data: {}
+  hdfs_datanode_1_data: {}
+  hdfs_datanode_2_data: {}

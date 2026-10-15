@@ -1,0 +1,13 @@
+{$PUBLIC_DOMAIN} {
+	handle /ws* {
+		reverse_proxy signaling:8001
+	}
+
+	handle /api/* {
+		reverse_proxy coordinator:5000
+	}
+
+	handle {
+		reverse_proxy frontend:80
+	}
+}

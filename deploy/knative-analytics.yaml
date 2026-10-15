@@ -1,0 +1,38 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: analytics-function
+  namespace: distributed-hospital
+  annotations:
+    networking.knative.dev/visibility: cluster-local
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "0"
+        autoscaling.knative.dev/max-scale: "3"
+    spec:
+      containerConcurrency: 10
+      containers:
+        - name: analytics
+          image: distributed-hospital-backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - analytics.serverless_function
+          ports:
+            - name: http1
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
